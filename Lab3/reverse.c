@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 int sum_file(char *input)
 {
@@ -12,6 +13,7 @@ int sum_file(char *input)
         sum += (int)buffor;
     }
 
+    close(file);
     return sum;
 }
 
@@ -29,7 +31,7 @@ int main(int argc, char **argv)
     int control_sum = sum_file(input_path);
 
     int input_file = open(input_path, O_RDONLY);
-    int output_file = open(output_path, O_WRONLY);
+    int output_file = open(output_path, O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
 
     while (lseek(input_file, start_offset, SEEK_END) >= 0) {
         char buffer;

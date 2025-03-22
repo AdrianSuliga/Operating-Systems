@@ -10,4 +10,4 @@ reverse: reverse.c
 	${CC} ${CFLAGS} $^ -o $@
 
 clean:
-	rm reverse 
+	rm reverse file2.txt file3.txt
