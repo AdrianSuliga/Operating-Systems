@@ -34,15 +34,9 @@ int main(int argc, char **argv)
 
         printf("parent process\n");
         printf("parent pid = %d, child pid = %d\n", (int)getpid(), (int)pid);
+        printf("child exit code: %d\n", WEXITSTATUS(status));
         printf("Parent's local = %d, parent's global = %d\n", local, global);
-    }
 
-    if (WIFEXITED(status)) {
-        int exit_status = WEXITSTATUS(status);
-        printf("Child exited with %d\n", exit_status);
-        return exit_status;
-    } else {
-        printf("Child did not exited normally\n");
-        return 1;
+        return WEXITSTATUS(status);
     }
 }

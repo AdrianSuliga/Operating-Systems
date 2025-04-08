@@ -20,13 +20,16 @@ int main(int argc, char **argv)
     for (int i = 0; i < pcount; i++) { 
         pid_t pid = fork();
 
-        if (pid == 0) {
+        if (pid < 0) {
+            printf("Failed to start new process with error %d\n", pid);
+            return pid;
+        } else if (pid == 0) {
             printf("Child Process PPID = %d, PID = %d\n", (int)getppid(), (int)getpid());
             exit(0);
+        } else {
+            int status = 0;
+            waitpid(pid, &status, 0);
         }
-
-        int status = 0;
-        wait(&status);
     }
 
     printf("Otrzymano %d argumentów\n", pcount);
