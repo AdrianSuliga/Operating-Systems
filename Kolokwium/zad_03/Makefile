@@ -5,5 +5,5 @@ compile:
 	$(CC) $(FLAGS) main.c -o main
 	./main 5
 
-clean:
+clear:
 	rm -f main

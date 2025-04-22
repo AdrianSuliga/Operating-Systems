@@ -1,8 +1,8 @@
 CFLAGS = -Wall
 CC = gcc
 
-main: main.c
-	${CC} ${CFLAGS} $^ -o $@ 
+main: main.o
+	${CC} ${CFLAGS} $^ -o $@
 
 clean:
 	rm -f main.o main
