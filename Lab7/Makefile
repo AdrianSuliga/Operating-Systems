@@ -2,12 +2,14 @@ CC = gcc
 CFLAGS = -Wall -Wextra
 LDFLAGS = -lrt -pthread
 
-all: server client
+all: 
+	make server
+	make client
 
-server: server.c common.h
+server: server.c 
 	$(CC) $(CFLAGS) -o server server.c $(LDFLAGS)
 
-client: client.c common.h
+client: client.c 
 	$(CC) $(CFLAGS) -o client client.c $(LDFLAGS)
 
 clean:
