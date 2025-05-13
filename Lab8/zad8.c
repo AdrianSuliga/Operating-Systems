@@ -51,7 +51,6 @@ void *user_thread(void *arg) {
 
         sleep(5 + rand() % 10);
     }
-    return NULL;
 }
 
 void *printer_thread(void *arg) {
@@ -79,7 +78,6 @@ void *printer_thread(void *arg) {
             sleep(1);
         }
     }
-    return NULL;
 }
 
 int main() {
