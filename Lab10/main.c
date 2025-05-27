@@ -24,11 +24,11 @@ void* patient_thread(void* arg) {
     int id = *(int*)arg;
     free(arg);
 
-    while (1) {
-        int wait_time = rand() % 4 + 2;
-        print_time(); printf("Pacjent(%d): Ide do szpitala, bede za %d s\n", id, wait_time);
-        sleep(wait_time);
+    int wait_time = rand() % 4 + 2;
+    print_time(); printf("Pacjent(%d): Ide do szpitala, bede za %d s\n", id, wait_time);
+    sleep(wait_time);
 
+    while (1) {
         pthread_mutex_lock(&mutex);
         if (waiting_patients >= MAX_WAITING_PATIENTS) {
             int retry_time = rand() % 3 + 1;
@@ -63,14 +63,8 @@ void* doctor_thread(void* arg) {
             pthread_cond_wait(&doctor_wakeup, &mutex);
         }
 
-        if (remaining_patients < 3) {
-            pthread_mutex_unlock(&mutex);
-            break; 
-        }
-
         print_time(); printf("Lekarz: budze sie\n");
 
-        // Simulate consultation
         print_time(); printf("Lekarz: konsultuje pacjentow\n");
         pthread_mutex_unlock(&mutex);
         sleep(rand() % 3 + 2); 
