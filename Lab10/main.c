@@ -5,196 +5,208 @@
 #include <time.h>
 #include <sys/time.h>
 
-// Konfiguracja
-#define DEFAULT_PATIENTS 20
-#define DEFAULT_PHARMACISTS 3
-#define PHARMACY_CAPACITY 6
+#define MAX_PATIENTS_IN_WAITING_ROOM 3
+#define PATIENTS_PER_CONSULTATION 3
 
-// Zmienne globalne
-volatile int medicine_count = 0;
-volatile int waiting_patients = 0;
-volatile int active_patients = 0;
-volatile int active_pharmacists = 0;
-volatile int waiting_pharmacist = 0;
+// Globalne zmienne
+int patients_in_waiting_room = 0;
+int patients_waiting_ids[MAX_PATIENTS_IN_WAITING_ROOM];
+int total_patients;
+int patients_finished = 0;
 
-pthread_mutex_t hospital_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t doctor_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t patient_cond = PTHREAD_COND_INITIALIZER;
-pthread_cond_t pharmacist_cond = PTHREAD_COND_INITIALIZER;
+// Muteksy i zmienne warunkowe
+pthread_mutex_t waiting_room_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t doctor_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t doctor_condition = PTHREAD_COND_INITIALIZER;
 
-char* get_current_time() {
-    static char buffer[64];
+// Funkcja zwracająca aktualny czas w formacie [HH:MM:SS]
+void get_current_time(char* buffer) {
     struct timeval tv;
     struct tm* tm_info;
     
     gettimeofday(&tv, NULL);
     tm_info = localtime(&tv.tv_sec);
     
-    snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d.%03d",
-         tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, (int)(tv.tv_usec / 1000));
+    sprintf(buffer, "[%02d:%02d:%02d.%03ld]", 
+            tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec, 
+            tv.tv_usec / 1000);
+}
+
+// Funkcja wątku pacjenta
+void* patient_thread(void* arg) {
+    int patient_id = *(int*)arg;
+    char time_str[20];
     
-    return buffer;
-}
-
-int get_random_time(int min, int max) {
-    return min + rand() % (max - min + 1);
-}
-
-void* doctor_routine(void* arg) {
     while (1) {
-        pthread_mutex_lock(&hospital_mutex);
-
-        while (!((waiting_patients >= 3 && medicine_count >= 3) || 
-                 (waiting_pharmacist && medicine_count < 3))) {
-            if (active_patients == 0 && active_pharmacists == 0) {
-                pthread_mutex_unlock(&hospital_mutex);
-                printf("[%s] - Lekarz: kończę pracę, wszyscy pacjenci zostali obsłużeni.\n", get_current_time());
-                return NULL;
-            }
-            printf("[%s] - Lekarz: zasypiam.\n", get_current_time());
-            pthread_cond_wait(&doctor_cond, &hospital_mutex);
-        }
-
-        printf("[%s] - Lekarz: budzę się.\n", get_current_time());
-
-        if (waiting_patients >= 3 && medicine_count >= 3) {
-            waiting_patients -= 3;
-            medicine_count -= 3;
-            printf("[%s] - Lekarz: konsultuję pacjentów ...\n", get_current_time());
-
-            pthread_mutex_unlock(&hospital_mutex);
-            sleep(get_random_time(2, 4));
-            pthread_mutex_lock(&hospital_mutex);
-            pthread_cond_broadcast(&patient_cond);
-        } else if (waiting_pharmacist && medicine_count < 3) {
-            printf("[%s] - Lekarz: przyjmuję dostawę leków\n", get_current_time());
-            pthread_mutex_unlock(&hospital_mutex);
-            sleep(get_random_time(1, 3));
-            pthread_mutex_lock(&hospital_mutex);
-            medicine_count = PHARMACY_CAPACITY;
-            waiting_pharmacist = 0;
-            pthread_cond_signal(&pharmacist_cond);
-        }
-
-        pthread_mutex_unlock(&hospital_mutex);
-    }
-    return NULL;
-}
-
-void* patient_routine(void* arg) {
-    int id = *((int*)arg);
-    free(arg);
-    srand(time(NULL) + id);
-
-    sleep(get_random_time(2, 5));
-    printf("[%s] - Pacjent(%d): Ide do szpitala, bede za kilka sekund.\n", get_current_time(), id);
-
-    while (1) {
-        pthread_mutex_lock(&hospital_mutex);
-
-        if (waiting_patients >= 3) {
-            int delay = get_random_time(2, 5);
-            printf("[%s] - Pacjent(%d): za dużo pacjentów, wracam później za %d s.\n", get_current_time(), id, delay);
-            pthread_mutex_unlock(&hospital_mutex);
-            sleep(delay);
+        // Losowy czas przybycia (2-5s)
+        int arrival_time = 2 + rand() % 4;
+        get_current_time(time_str);
+        printf("%s - Pacjent(%d): Ide do szpitala, bede za %d s\n", 
+               time_str, patient_id, arrival_time);
+        sleep(arrival_time);
+        
+        // Próba wejścia do poczekalni
+        pthread_mutex_lock(&waiting_room_mutex);
+        
+        if (patients_in_waiting_room >= MAX_PATIENTS_IN_WAITING_ROOM) {
+            // Za dużo pacjentów, wracam później
+            pthread_mutex_unlock(&waiting_room_mutex);
+            
+            int wait_time = 2 + rand() % 4;
+            get_current_time(time_str);
+            printf("%s - Pacjent(%d): za dużo pacjentów, wracam później za %d s\n", 
+                   time_str, patient_id, wait_time);
+            sleep(wait_time);
             continue;
         }
-
-        waiting_patients++;
-        printf("[%s] - Pacjent(%d): czeka %d pacjentów na lekarza.\n", get_current_time(), id, waiting_patients);
-
-        if (waiting_patients == 3 && medicine_count >= 3) {
-            printf("[%s] - Pacjent(%d): budzę lekarza.\n", get_current_time(), id);
-            pthread_cond_signal(&doctor_cond);
+        
+        // Wchodzę do poczekalni
+        patients_waiting_ids[patients_in_waiting_room] = patient_id;
+        patients_in_waiting_room++;
+        
+        get_current_time(time_str);
+        printf("%s - Pacjent(%d): czeka %d pacjentów na lekarza\n", 
+               time_str, patient_id, patients_in_waiting_room);
+        
+        // Jeśli jestem trzecim pacjentem, budzę lekarza
+        if (patients_in_waiting_room == PATIENTS_PER_CONSULTATION) {
+            get_current_time(time_str);
+            printf("%s - Pacjent(%d): budzę lekarza\n", time_str, patient_id);
+            
+            pthread_mutex_lock(&doctor_mutex);
+            pthread_cond_signal(&doctor_condition);
+            pthread_mutex_unlock(&doctor_mutex);
         }
-
-        while (1) {
-            pthread_cond_wait(&patient_cond, &hospital_mutex);
-            break;
+        
+        pthread_mutex_unlock(&waiting_room_mutex);
+        
+        // Czekam na konsultację (będę obudzony przez lekarza)
+        pthread_mutex_lock(&doctor_mutex);
+        while (patients_in_waiting_room > 0) {
+            pthread_cond_wait(&doctor_condition, &doctor_mutex);
         }
-
-        pthread_mutex_unlock(&hospital_mutex);
-        printf("[%s] - Pacjent(%d): kończę wizytę.\n", get_current_time(), id);
-
-        pthread_mutex_lock(&hospital_mutex);
-        active_patients--;
-        pthread_mutex_unlock(&hospital_mutex);
+        pthread_mutex_unlock(&doctor_mutex);
+        
+        // Kończę wizytę
+        get_current_time(time_str);
+        printf("%s - Pacjent(%d): kończę wizytę\n", time_str, patient_id);
+        
+        pthread_mutex_lock(&waiting_room_mutex);
+        patients_finished++;
+        pthread_mutex_unlock(&waiting_room_mutex);
+        
+        // Pacjent kończy (nie wraca ponownie)
         break;
     }
+    
     return NULL;
 }
 
-void* pharmacist_routine(void* arg) {
-    int id = *((int*)arg);
-    free(arg);
-    srand(time(NULL) + id);
-
-    sleep(get_random_time(5, 15));
-    printf("[%s] - Farmaceuta(%d): ide do szpitala, bede za kilka sekund.\n", get_current_time(), id);
-
-    pthread_mutex_lock(&hospital_mutex);
-    while (medicine_count == PHARMACY_CAPACITY) {
-        printf("[%s] - Farmaceuta(%d): czekam na oproznienie apteczki.\n", get_current_time(), id);
-        pthread_cond_wait(&pharmacist_cond, &hospital_mutex);
+// Funkcja wątku lekarza
+void* doctor_thread(void* arg) {
+    char time_str[20];
+    
+    while (1) {
+        // Sprawdzam czy wszyscy pacjenci zostali obsłużeni
+        pthread_mutex_lock(&waiting_room_mutex);
+        if (patients_finished >= total_patients) {
+            pthread_mutex_unlock(&waiting_room_mutex);
+            get_current_time(time_str);
+            printf("%s - Lekarz: wszyscy pacjenci obsłużeni, kończę pracę\n", time_str);
+            break;
+        }
+        pthread_mutex_unlock(&waiting_room_mutex);
+        
+        // Śpię i czekam na sygnał
+        pthread_mutex_lock(&doctor_mutex);
+        get_current_time(time_str);
+        printf("%s - Lekarz: zasypiam\n", time_str);
+        
+        pthread_cond_wait(&doctor_condition, &doctor_mutex);
+        
+        get_current_time(time_str);
+        printf("%s - Lekarz: budzę się\n", time_str);
+        pthread_mutex_unlock(&doctor_mutex);
+        
+        // Sprawdzam czy są pacjenci do konsultacji
+        pthread_mutex_lock(&waiting_room_mutex);
+        if (patients_in_waiting_room >= PATIENTS_PER_CONSULTATION) {
+            // Konsultuję pacjentów
+            get_current_time(time_str);
+            printf("%s - Lekarz: konsultuję pacjentów %d, %d, %d\n", 
+                   time_str, 
+                   patients_waiting_ids[0], 
+                   patients_waiting_ids[1], 
+                   patients_waiting_ids[2]);
+            
+            // Opróżniam poczekalnię
+            patients_in_waiting_room = 0;
+            pthread_mutex_unlock(&waiting_room_mutex);
+            
+            // Konsultacja trwa 2-4s
+            int consultation_time = 2 + rand() % 3;
+            sleep(consultation_time);
+            
+            // Budzę pacjentów po konsultacji
+            pthread_mutex_lock(&doctor_mutex);
+            pthread_cond_broadcast(&doctor_condition);
+            pthread_mutex_unlock(&doctor_mutex);
+        } else {
+            pthread_mutex_unlock(&waiting_room_mutex);
+        }
     }
-
-    if (medicine_count < 3) {
-        waiting_pharmacist = 1;
-        printf("[%s] - Farmaceuta(%d): budzę lekarza.\n", get_current_time(), id);
-        pthread_cond_signal(&doctor_cond);
-        pthread_cond_wait(&pharmacist_cond, &hospital_mutex);
-    }
-
-    printf("[%s] - Farmaceuta(%d): dostarczam leki.\n", get_current_time(), id);
-    printf("[%s] - Farmaceuta(%d): zakończyłem dostawę.\n", get_current_time(), id);
-    active_pharmacists--;
-    pthread_mutex_unlock(&hospital_mutex);
-
+    
     return NULL;
 }
 
 int main(int argc, char* argv[]) {
-    int num_patients = DEFAULT_PATIENTS;
-    int num_pharmacists = DEFAULT_PHARMACISTS;
-
-    if (argc >= 3) {
-        num_patients = atoi(argv[1]);
-        num_pharmacists = atoi(argv[2]);
+    if (argc != 2) {
+        printf("Użycie: %s <liczba_pacjentów>\n", argv[0]);
+        return 1;
     }
-
-    active_patients = num_patients;
-    active_pharmacists = num_pharmacists;
-
+    
+    total_patients = atoi(argv[1]);
+    if (total_patients <= 0) {
+        printf("Liczba pacjentów musi być większa od 0\n");
+        return 1;
+    }
+    
+    // Inicjalizacja generatora liczb losowych
+    srand(time(NULL));
+    
+    printf("Rozpoczynam symulację szpitala z %d pacjentami\n", total_patients);
+    
+    // Tworzenie wątków
     pthread_t doctor;
-    pthread_t* patients = malloc(num_patients * sizeof(pthread_t));
-    pthread_t* pharmacists = malloc(num_pharmacists * sizeof(pthread_t));
-
-    pthread_create(&doctor, NULL, doctor_routine, NULL);
-
-    for (int i = 0; i < num_patients; ++i) {
-        int* id = malloc(sizeof(int));
-        *id = i + 1;
-        pthread_create(&patients[i], NULL, patient_routine, id);
+    pthread_t* patients = malloc(total_patients * sizeof(pthread_t));
+    int* patient_ids = malloc(total_patients * sizeof(int));
+    
+    // Tworzenie wątku lekarza
+    pthread_create(&doctor, NULL, doctor_thread, NULL);
+    
+    // Tworzenie wątków pacjentów
+    for (int i = 0; i < total_patients; i++) {
+        patient_ids[i] = i + 1;
+        pthread_create(&patients[i], NULL, patient_thread, &patient_ids[i]);
     }
-
-    for (int i = 0; i < num_pharmacists; ++i) {
-        int* id = malloc(sizeof(int));
-        *id = i + 1;
-        pthread_create(&pharmacists[i], NULL, pharmacist_routine, id);
-    }
-
-    for (int i = 0; i < num_patients; ++i) {
+    
+    // Oczekiwanie na zakończenie wszystkich wątków
+    pthread_join(doctor, NULL);
+    
+    for (int i = 0; i < total_patients; i++) {
         pthread_join(patients[i], NULL);
     }
-
-    for (int i = 0; i < num_pharmacists; ++i) {
-        pthread_join(pharmacists[i], NULL);
-    }
-
-    pthread_cond_broadcast(&doctor_cond);
-    pthread_join(doctor, NULL);
-
+    
+    printf("Symulacja zakończona\n");
+    
+    // Zwolnienie pamięci
     free(patients);
-    free(pharmacists);
+    free(patient_ids);
+    
+    // Zniszczenie muteksów i zmiennych warunkowych
+    pthread_mutex_destroy(&waiting_room_mutex);
+    pthread_mutex_destroy(&doctor_mutex);
+    pthread_cond_destroy(&doctor_condition);
+    
     return 0;
 }
