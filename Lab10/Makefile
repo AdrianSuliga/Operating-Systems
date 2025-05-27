@@ -7,7 +7,7 @@ all:
 	make main
 
 main: main.c
-	${CC} $^ -o $@
+	${CC} $^ -o $@ -pthread
 
 clean:
 	rm main
