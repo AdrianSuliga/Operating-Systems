@@ -6,9 +6,9 @@
 
 #define MAX_WAITING_PATIENTS 3
 
-int waiting_patients = 0;
-int total_patients = 0;
-int remaining_patients = 0;
+volatile int waiting_patients = 0;
+volatile int total_patients = 0;
+volatile int remaining_patients = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t doctor_wakeup = PTHREAD_COND_INITIALIZER;
