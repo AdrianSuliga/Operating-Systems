@@ -17,7 +17,6 @@
 #define ALIVE_INTERVAL 30
 
 typedef struct {
-    int socket;
     char name[MAX_NAME_LEN];
     struct sockaddr_in address;
     int active;
@@ -40,9 +39,11 @@ void signal_handler(int sig) {
     exit(0);
 }
 
-int find_client_by_socket(int socket) {
+int find_client_by_address(struct sockaddr_in* addr) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].active && clients[i].socket == socket) {
+        if (clients[i].active && 
+            clients[i].address.sin_addr.s_addr == addr->sin_addr.s_addr &&
+            clients[i].address.sin_port == addr->sin_port) {
             return i;
         }
     }
@@ -61,13 +62,12 @@ int find_client_by_name(const char* name) {
 void remove_client(int index) {
     if (index >= 0 && index < MAX_CLIENTS && clients[index].active) {
         printf("Usuwanie klienta: %s\n", clients[index].name);
-        close(clients[index].socket);
         clients[index].active = 0;
         memset(clients[index].name, 0, MAX_NAME_LEN);
     }
 }
 
-void send_client_list(int client_socket) {
+void send_client_list(struct sockaddr_in* client_addr) {
     char buffer[BUFFER_SIZE] = "LIST:";
     char temp[64];
     
@@ -86,10 +86,11 @@ void send_client_list(int client_socket) {
         buffer[len-1] = '\0';
     }
     
-    send(client_socket, buffer, strlen(buffer), 0);
+    sendto(server_socket, buffer, strlen(buffer), 0, 
+           (struct sockaddr*)client_addr, sizeof(*client_addr));
 }
 
-void broadcast_message(const char* sender, const char* message, int sender_socket) {
+void broadcast_message(const char* sender, const char* message, struct sockaddr_in* sender_addr) {
     char time_str[26];
     char full_message[BUFFER_SIZE];
     
@@ -98,8 +99,11 @@ void broadcast_message(const char* sender, const char* message, int sender_socke
     
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].active && clients[i].socket != sender_socket) {
-            send(clients[i].socket, full_message, strlen(full_message), 0);
+        if (clients[i].active && 
+            !(clients[i].address.sin_addr.s_addr == sender_addr->sin_addr.s_addr &&
+              clients[i].address.sin_port == sender_addr->sin_port)) {
+            sendto(server_socket, full_message, strlen(full_message), 0,
+                   (struct sockaddr*)&clients[i].address, sizeof(clients[i].address));
         }
     }
     pthread_mutex_unlock(&clients_mutex);
@@ -115,103 +119,10 @@ void send_private_message(const char* sender, const char* recipient, const char*
     pthread_mutex_lock(&clients_mutex);
     int recipient_index = find_client_by_name(recipient);
     if (recipient_index != -1) {
-        send(clients[recipient_index].socket, full_message, strlen(full_message), 0);
+        sendto(server_socket, full_message, strlen(full_message), 0,
+               (struct sockaddr*)&clients[recipient_index].address, sizeof(clients[recipient_index].address));
     }
     pthread_mutex_unlock(&clients_mutex);
-}
-
-void* handle_client(void* arg) {
-    int client_socket = *(int*)arg;
-    char buffer[BUFFER_SIZE];
-    char client_name[MAX_NAME_LEN];
-    int client_index = -1;
-    
-    // Odbierz nazwę klienta
-    int bytes_received = recv(client_socket, client_name, MAX_NAME_LEN-1, 0);
-    if (bytes_received <= 0) {
-        close(client_socket);
-        return NULL;
-    }
-    client_name[bytes_received] = '\0';
-    
-    // Sprawdź czy nazwa nie jest zajęta
-    pthread_mutex_lock(&clients_mutex);
-    if (find_client_by_name(client_name) != -1) {
-        pthread_mutex_unlock(&clients_mutex);
-        send(client_socket, "ERROR: Nazwa już zajęta", 24, 0);
-        close(client_socket);
-        return NULL;
-    }
-    
-    // Znajdź wolne miejsce dla klienta
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!clients[i].active) {
-            clients[i].socket = client_socket;
-            strcpy(clients[i].name, client_name);
-            clients[i].active = 1;
-            clients[i].last_alive = time(NULL);
-            client_index = i;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&clients_mutex);
-    
-    if (client_index == -1) {
-        send(client_socket, "ERROR: Serwer pełny", 19, 0);
-        close(client_socket);
-        return NULL;
-    }
-    
-    send(client_socket, "OK", 2, 0);
-    printf("Klient %s połączony\n", client_name);
-    
-    // Główna pętla obsługi klienta
-    while (1) {
-        bytes_received = recv(client_socket, buffer, BUFFER_SIZE-1, 0);
-        if (bytes_received <= 0) {
-            break;
-        }
-        
-        buffer[bytes_received] = '\0';
-
-        if (buffer[0] != 'A') {
-            printf("Otrzymano od %s: %s\n", client_name, buffer);
-        }
-
-        // Aktualizuj czas ostatniej aktywności
-        pthread_mutex_lock(&clients_mutex);
-        clients[client_index].last_alive = time(NULL);
-        pthread_mutex_unlock(&clients_mutex);
-        
-        if (strncmp(buffer, "LIST", 4) == 0) {
-            send_client_list(client_socket);
-        }
-        else if (strncmp(buffer, "2ALL ", 5) == 0) {
-            broadcast_message(client_name, buffer + 5, client_socket);
-        }
-        else if (strncmp(buffer, "2ONE ", 5) == 0) {
-            char* space = strchr(buffer + 5, ' ');
-            if (space) {
-                *space = '\0';
-                char* recipient = buffer + 5;
-                char* message = space + 1;
-                send_private_message(client_name, recipient, message);
-            }
-        }
-        else if (strncmp(buffer, "STOP", 4) == 0) {
-            break;
-        }
-        else if (strncmp(buffer, "ALIVE", 5) == 0) {
-            send(client_socket, "ALIVE_ACK", 9, 0);
-        }
-    }
-    
-    // Usuń klienta
-    pthread_mutex_lock(&clients_mutex);
-    remove_client(client_index);
-    pthread_mutex_unlock(&clients_mutex);
-    
-    return NULL;
 }
 
 void* alive_checker(void* arg) {
@@ -228,7 +139,8 @@ void* alive_checker(void* arg) {
             }
             else if (clients[i].active) {
                 // Wyślij ping
-                send(clients[i].socket, "ALIVE", 5, 0);
+                sendto(server_socket, "ALIVE", 5, 0,
+                       (struct sockaddr*)&clients[i].address, sizeof(clients[i].address));
             }
         }
         pthread_mutex_unlock(&clients_mutex);
@@ -245,6 +157,7 @@ int main(int argc, char* argv[]) {
     int port = atoi(argv[1]);
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
     
     // Obsługa sygnału Ctrl+C
     signal(SIGINT, signal_handler);
@@ -252,8 +165,8 @@ int main(int argc, char* argv[]) {
     // Inicjalizacja tablicy klientów
     memset(clients, 0, sizeof(clients));
     
-    // Tworzenie socketu
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    // Tworzenie socketu UDP
+    server_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (server_socket < 0) {
         perror("Błąd tworzenia socketu");
         return 1;
@@ -276,14 +189,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Nasłuchiwanie
-    if (listen(server_socket, MAX_CLIENTS) < 0) {
-        perror("Błąd nasłuchiwania");
-        close(server_socket);
-        return 1;
-    }
-    
-    printf("Serwer nasłuchuje na porcie %d\n", port);
+    printf("Serwer UDP nasłuchuje na porcie %d\n", port);
     
     // Uruchomienie wątku sprawdzającego aktywność klientów
     pthread_t alive_thread;
@@ -291,29 +197,100 @@ int main(int argc, char* argv[]) {
     
     // Główna pętla serwera
     while (1) {
-        int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
-        if (client_socket < 0) {
-            if (errno == EINTR) continue;
-            perror("Błąd akceptowania połączenia");
+        int bytes_received = recvfrom(server_socket, buffer, BUFFER_SIZE-1, 0,
+                                     (struct sockaddr*)&client_addr, &client_len);
+        if (bytes_received <= 0) {
             continue;
         }
         
-        printf("Nowe połączenie z %s:%d\n", 
-               inet_ntoa(client_addr.sin_addr), 
-               ntohs(client_addr.sin_port));
+        buffer[bytes_received] = '\0';
         
-        // Tworzenie wątku dla klienta
-        pthread_t client_thread;
-        int* client_sock_ptr = malloc(sizeof(int));
-        *client_sock_ptr = client_socket;
+        pthread_mutex_lock(&clients_mutex);
+        int client_index = find_client_by_address(&client_addr);
         
-        if (pthread_create(&client_thread, NULL, handle_client, client_sock_ptr) != 0) {
-            perror("Błąd tworzenia wątku");
-            close(client_socket);
-            free(client_sock_ptr);
+        // Jeśli to nowy klient próbujący się zarejestrować
+        if (client_index == -1 && strncmp(buffer, "REGISTER:", 9) == 0) {
+            char* client_name = buffer + 9;
+            
+            // Sprawdź czy nazwa nie jest zajęta
+            if (find_client_by_name(client_name) != -1) {
+                const char msg[] = "ERROR: Nazwa już zajęta";
+                sendto(server_socket, msg, sizeof(msg), 0,
+                       (struct sockaddr*)&client_addr, sizeof(client_addr));
+                pthread_mutex_unlock(&clients_mutex);
+                continue;
+            }
+            
+            // Znajdź wolne miejsce dla klienta
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (!clients[i].active) {
+                    strcpy(clients[i].name, client_name);
+                    clients[i].address = client_addr;
+                    clients[i].active = 1;
+                    clients[i].last_alive = time(NULL);
+                    client_index = i;
+                    break;
+                }
+            }
+            
+            if (client_index == -1) {
+                sendto(server_socket, "ERROR: Serwer pełny", 19, 0,
+                       (struct sockaddr*)&client_addr, sizeof(client_addr));
+            } else {
+                sendto(server_socket, "OK", 2, 0,
+                       (struct sockaddr*)&client_addr, sizeof(client_addr));
+                printf("Klient %s połączony z %s:%d\n", client_name,
+                       inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            }
+            pthread_mutex_unlock(&clients_mutex);
+            continue;
         }
         
-        pthread_detach(client_thread);
+        // Jeśli to istniejący klient
+        if (client_index != -1) {
+            // Aktualizuj czas ostatniej aktywności
+            clients[client_index].last_alive = time(NULL);
+            
+            if (buffer[0] != 'A') {
+                printf("Otrzymano od %s: %s\n", clients[client_index].name, buffer);
+            }
+            
+            if (strncmp(buffer, "LIST", 4) == 0) {
+                pthread_mutex_unlock(&clients_mutex);
+                send_client_list(&client_addr);
+                continue;
+            }
+            else if (strncmp(buffer, "2ALL ", 5) == 0) {
+                char* sender_name = clients[client_index].name;
+                pthread_mutex_unlock(&clients_mutex);
+                broadcast_message(sender_name, buffer + 5, &client_addr);
+                continue;
+            }
+            else if (strncmp(buffer, "2ONE ", 5) == 0) {
+                char* space = strchr(buffer + 5, ' ');
+                if (space) {
+                    *space = '\0';
+                    char* recipient = buffer + 5;
+                    char* message = space + 1;
+                    char* sender_name = clients[client_index].name;
+                    pthread_mutex_unlock(&clients_mutex);
+                    send_private_message(sender_name, recipient, message);
+                    continue;
+                }
+            }
+            else if (strncmp(buffer, "STOP", 4) == 0) {
+                remove_client(client_index);
+                pthread_mutex_unlock(&clients_mutex);
+                continue;
+            }
+            else if (strncmp(buffer, "ALIVE", 5) == 0) {
+                sendto(server_socket, "ALIVE_ACK", 9, 0,
+                       (struct sockaddr*)&client_addr, sizeof(client_addr));
+                pthread_mutex_unlock(&clients_mutex);
+                continue;
+            }
+        }
+        pthread_mutex_unlock(&clients_mutex);
     }
     
     close(server_socket);

@@ -13,10 +13,12 @@
 
 int client_socket;
 char client_name[MAX_NAME_LEN];
+struct sockaddr_in server_addr;
 
 void signal_handler(int sig) {
     printf("\nWysyłanie STOP do serwera...\n");
-    send(client_socket, "STOP", 4, 0);
+    sendto(client_socket, "STOP", 4, 0, 
+           (struct sockaddr*)&server_addr, sizeof(server_addr));
     close(client_socket);
     exit(0);
 }
@@ -24,11 +26,14 @@ void signal_handler(int sig) {
 void* receive_messages(void* arg) {
     char buffer[BUFFER_SIZE];
     int bytes_received;
+    struct sockaddr_in from_addr;
+    socklen_t from_len = sizeof(from_addr);
     
     while (1) {
-        bytes_received = recv(client_socket, buffer, BUFFER_SIZE-1, 0);
+        bytes_received = recvfrom(client_socket, buffer, BUFFER_SIZE-1, 0,
+                                 (struct sockaddr*)&from_addr, &from_len);
         if (bytes_received <= 0) {
-            printf("Połączenie z serwerem zostało przerwane\n");
+            printf("Błąd odbierania wiadomości\n");
             break;
         }
         
@@ -36,13 +41,13 @@ void* receive_messages(void* arg) {
         
         if (strncmp(buffer, "ALIVE", 5) == 0) {
             // Odpowiedz na ping serwera
-            send(client_socket, "ALIVE", 5, 0);
+            sendto(client_socket, "ALIVE", 5, 0,
+                   (struct sockaddr*)&server_addr, sizeof(server_addr));
         }
         else {
             printf("%s\n", buffer);
         }
     }
-    
     return NULL;
 }
 
@@ -59,38 +64,35 @@ int main(int argc, char* argv[]) {
     // Obsługa sygnału Ctrl+C
     signal(SIGINT, signal_handler);
     
-    // Tworzenie socketu
-    client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    // Tworzenie socketu UDP
+    client_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (client_socket < 0) {
         perror("Błąd tworzenia socketu");
         return 1;
     }
     
     // Konfiguracja adresu serwera
-    struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
-    
     if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
         printf("Nieprawidłowy adres IP\n");
         close(client_socket);
         return 1;
     }
     
-    // Połączenie z serwerem
-    if (connect(client_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Błąd połączenia z serwerem");
-        close(client_socket);
-        return 1;
-    }
-    
-    // Wysłanie nazwy klienta
-    send(client_socket, client_name, strlen(client_name), 0);
+    // Rejestracja klienta na serwerze
+    char register_msg[BUFFER_SIZE];
+    snprintf(register_msg, sizeof(register_msg), "REGISTER:%s", client_name);
+    sendto(client_socket, register_msg, strlen(register_msg), 0,
+           (struct sockaddr*)&server_addr, sizeof(server_addr));
     
     // Oczekiwanie na potwierdzenie
     char response[BUFFER_SIZE];
-    int bytes_received = recv(client_socket, response, BUFFER_SIZE-1, 0);
+    struct sockaddr_in from_addr;
+    socklen_t from_len = sizeof(from_addr);
+    int bytes_received = recvfrom(client_socket, response, BUFFER_SIZE - 1, 0,
+                                 (struct sockaddr*)&from_addr, &from_len);
     if (bytes_received <= 0) {
         printf("Błąd komunikacji z serwerem\n");
         close(client_socket);
@@ -106,10 +108,10 @@ int main(int argc, char* argv[]) {
     
     printf("Połączono z serwerem jako %s\n", client_name);
     printf("Dostępne komendy:\n");
-    printf("  LIST - lista aktywnych klientów\n");
-    printf("  2ALL <wiadomość> - wiadomość do wszystkich\n");
-    printf("  2ONE <nazwa> <wiadomość> - wiadomość prywatna\n");
-    printf("  STOP - zakończenie\n\n");
+    printf(" LIST - lista aktywnych klientów\n");
+    printf(" 2ALL <wiadomość> - wiadomość do wszystkich\n");
+    printf(" 2ONE <nazwa> <wiadomość> - wiadomość prywatna\n");
+    printf(" STOP - zakończenie\n\n");
     
     // Uruchomienie wątku do odbierania wiadomości
     pthread_t receive_thread;
@@ -130,11 +132,13 @@ int main(int argc, char* argv[]) {
         }
         
         if (strcmp(input, "STOP") == 0) {
-            send(client_socket, input, strlen(input), 0);
+            sendto(client_socket, input, strlen(input), 0,
+                   (struct sockaddr*)&server_addr, sizeof(server_addr));
             break;
         }
         
-        send(client_socket, input, strlen(input), 0);
+        sendto(client_socket, input, strlen(input), 0,
+               (struct sockaddr*)&server_addr, sizeof(server_addr));
     }
     
     close(client_socket);
