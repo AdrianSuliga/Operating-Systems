@@ -18,27 +18,26 @@ int main(int argc, char const *argv[])
 	key_t key = ftok(PATH, ID);
 
 	// Utwórz segment pamięci współdzielonej
-    // zwracaną wartością jest identyfikator bloku pamięci współdzielonej - czyli shmid
+	// zwracaną wartością jest identyfikator bloku pamięci współdzielonej - czyli shmid
 	int shmid;
 	if ((shmid = shmget(key, BUFFER_SIZE, 0666)) == -1)
 	{
-		fprintf(stderr, "... :%s\n", strerror(errno));
+		fprintf(stderr, "shmget error :%s\n", strerror(errno));
 		exit(1);
 	}
 
 	// Mapuj segmenty pamięci współdzielonej na przestrzeń adresową procesu
-	shmAddr = (char *)shmat(shmid, NULL, 0);
-	if(shmAddr == (char *)(-1)) 
+	shmAddr = shmat(shmid, NULL, 0);
+	if(shmAddr == (char *)-1) 
 	{
-		fprintf(stderr, ":%s\n", strerror(errno));
+		fprintf(stderr, "shmat error :%s\n", strerror(errno));
+		exit(1);
 	}	
 
 	printf("%s\n", shmAddr);
 
 	// Rozłącz 
-	if (shmdt(shmAddr) == -1) {
-		exit(1);
-	}
+	shmdt(shmAddr);
 	
 	// Usuń segment pamięci współdzielonej
 	shmctl(shmid, IPC_RMID, NULL);
